@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Betaflight Rate Viewer</title>
+<style>
+  :root {
+    --bg: #141414;
+    --panel: #1c1c1c;
+    --border: #3a3a3a;
+    --text: #e6e6e6;
+    --muted: #8a8a8a;
+    --accent: #ffbb00;
+    --roll: #d9525e;
+    --pitch: #5fbf3f;
+    --yaw: #4a78d6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 "Open Sans", system-ui, -apple-system, Segoe UI, sans-serif;
+  }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+  header h1 { font-size: 18px; margin: 0 12px 0 0; font-weight: 600; }
+  #drop {
+    border: 1px dashed var(--border); border-radius: 8px; padding: 8px 14px;
+    color: var(--muted); cursor: pointer;
+  }
+  #drop.over { border-color: var(--accent); color: var(--accent); }
+  #drop input { display: none; }
+  #meta { color: var(--muted); font-size: 12px; }
+  #tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  #tabs button {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit;
+  }
+  #tabs button.sel { border-color: var(--accent); color: var(--accent); }
+  #tabs button .act { font-size: 11px; color: var(--accent); margin-left: 6px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .box {
+    background: var(--panel); border: 2px solid #2a2a2a; border-radius: 12px; padding: 16px;
+    position: relative;
+  }
+  .box.titled { padding-top: 28px; }
+  .box .title {
+    position: absolute; top: -14px; left: 14px; background: #262626;
+    padding: 4px 14px; border-radius: 14px; font-weight: 600;
+  }
+  .ratestype { display: flex; align-items: center; gap: 12px; }
+  .pill {
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; min-width: 120px;
+  }
+  .ratestype .logo { font-weight: 800; font-style: italic; letter-spacing: 1px; color: #5aa0e0; font-size: 20px; }
+  table { border-collapse: collapse; width: 100%; }
+  th { font-weight: normal; color: var(--text); padding: 4px 6px; text-align: center; vertical-align: bottom; }
+  td { padding: 4px 6px; text-align: center; }
+  td.lbl { text-align: left; width: 1%; white-space: nowrap; }
+  .axis { display: inline-block; color: #fff; font-weight: 700; border-radius: 4px; padding: 3px 10px; }
+  .axis.roll { background: var(--roll); } .axis.pitch { background: var(--pitch); } .axis.yaw { background: var(--yaw); }
+  .val { display: inline-block; min-width: 64px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; text-align: left; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .fields { display: flex; gap: 20px; flex-wrap: wrap; }
+  .fields .f { display: flex; flex-direction: column; gap: 4px; }
+  .fields .f span:first-child { color: var(--muted); font-size: 13px; }
+  canvas { width: 100%; display: block; background: #161616; border: 1px solid #262626; }
+  #rateCanvas { aspect-ratio: 1.4; }
+  #thrCanvas { aspect-ratio: 3.1; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .empty { color: var(--muted); padding: 40px; text-align: center; border: 1px dashed var(--border); border-radius: 12px; }
+  .err { color: #ff6b6b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Betaflight Rate Profile Viewer</h1>
+  <label id="drop">Choose or drop a Betaflight backup (.txt) <input type="file" id="file" accept=".txt,text/plain"></label>
+  <span id="meta"></span>
+</header>
+
+<div id="tabs"></div>
+<div id="empty" class="empty">Load a <code>diff all</code> or <code>dump</code> backup to see its rate profiles.</div>
+
+<div id="view" class="grid" hidden>
+  <div class="col">
+    <div class="box ratestype">
+      <span class="pill" id="ratesTypeName"></span><span>Rates Type</span><span class="logo" id="ratesLogo"></span>
+    </div>
+    <div class="box">
+      <table>
+        <thead><tr><th></th><th id="h1"></th><th id="h2"></th><th id="h3"></th><th>Max Vel<br>[deg/s]</th></tr></thead>
+        <tbody id="rateRows"></tbody>
+      </table>
+      <div class="hint" id="limitHint"></div>
+    </div>
+    <div class="box titled">
+      <span class="title">Rates Preview</span>
+      <canvas id="rateCanvas"></canvas>
+      <div class="hint">Hover over the graph to see deg/s at a given stick position.</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="box fields">
+      <div class="f"><span>Throttle Limit</span><span class="val" id="thrLimitType"></span></div>
+      <div class="f"><span>Throttle Limit %</span><span class="val" id="thrLimitPct"></span></div>
+    </div>
+    <div class="box fields">
+      <div class="f"><span>Throttle MID</span><span class="val" id="thrMid"></span></div>
+      <div class="f"><span>Throttle EXPO</span><span class="val" id="thrExpo"></span></div>
+      <div class="f"><span>Throttle Hover</span><span class="val" id="thrHover"></span></div>
+    </div>
+    <div class="box titled">
+      <span class="title">Throttle Curve Preview</span>
+      <canvas id="thrCanvas"></canvas>
+      <div class="hint">Hover over the graph to see throttle output at a given stick position.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Rate types and lookup tables, as in betaflight/src/main/cli/settings.c
+const RATES_TYPES = ["BETAFLIGHT", "RACEFLIGHT", "KISS", "ACTUAL", "QUICK"];
+const THROTTLE_LIMIT_TYPES = ["OFF", "SCALE", "CLIP"];
+const AXES = ["roll", "pitch", "yaw"];
+const COLORS = { roll: "#d9525e", pitch: "#5fbf3f", yaw: "#4a78d6" };
+
+// Firmware defaults, from betaflight/src/main/fc/controlrate_profile.c
+function defaultRateProfile() {
+  return {
+    rateprofile_name: "",
+    thr_mid: 50, thr_expo: 0, thr_hover: 50,
+    rates_type: "ACTUAL",
+    quickrates_rc_expo: "OFF",
+    roll_rc_rate: 7, pitch_rc_rate: 7, yaw_rc_rate: 7,
+    roll_expo: 0, pitch_expo: 0, yaw_expo: 0,
+    roll_srate: 67, pitch_srate: 67, yaw_srate: 67,
+    throttle_limit_type: "OFF", throttle_limit_percent: 100,
+    roll_rate_limit: 1998, pitch_rate_limit: 1998, yaw_rate_limit: 1998,
+  };
+}
+
+// Parse a CLI diff/dump. "set" lines are routed to master, the current PID profile, or the current rate profile.
+function parseBackup(text) {
+  const result = {
+    version: "", board: "", craft: "",
+    master: { deadband: 0, yaw_deadband: 0 },
+    rateProfiles: [0, 1, 2, 3].map(defaultRateProfile),
+    activeRateProfile: 0,
+  };
+  let section = "master";
+  let current = 0;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) {
+      const m = line.match(/^#\s*(Betaflight\s*\/.*)$/);
+      if (m && !result.version) result.version = m[1];
+      continue;
+    }
+    let m;
+    if ((m = line.match(/^board_name\s+(\S+)/))) { result.board = m[1]; continue; }
+    if ((m = line.match(/^rateprofile\s+(\d+)/))) {
+      section = "rate"; current = +m[1];
+      while (result.rateProfiles.length <= current) result.rateProfiles.push(defaultRateProfile());
+      result.activeRateProfile = current;
+      continue;
+    }
+    if (/^profile\s+\d+/.test(line)) { section = "pid"; continue; }
+    if ((m = line.match(/^set\s+(\S+)\s*=\s*(.*)$/))) {
+      const key = m[1], value = m[2].trim();
+      if (key === "craft_name") result.craft = value;
+      const target = section === "rate" ? result.rateProfiles[current] : section === "master" ? result.master : null;
+      if (target) target[key] = /^-?\d+$/.test(value) ? +value : value;
+    }
+  }
+  return result;
+}
+
+// Setpoint maths, ported from betaflight/src/main/fc/rc.c (raw CLI integers in, deg/s out)
+const constrain = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const RATE_FNS = {
+  BETAFLIGHT(c, a, rcRate, rate, expo) {
+    if (expo) { const e = expo / 100; c = c * a ** 3 * e + c * (1 - e); }
+    let r = rcRate / 100;
+    if (r > 2) r += 14.54 * (r - 2);
+    let angle = 200 * r * c;
+    if (rate) angle *= 1 / constrain(1 - a * (rate / 100), 0.01, 1);
+    return angle;
+  },
+  RACEFLIGHT(c, a, rcRate, rate, expo) {
+    c = (1 + 0.01 * expo * (c * c - 1)) * c;
+    return 10 * rcRate * c * (1 + a * rate * 0.01);
+  },
+  KISS(c, a, rcRate, rate, expo) {
+    const curve = expo / 100;
+    const useRates = 1 / constrain(1 - a * (rate / 100), 0.01, 1);
+    const kissRc = (c ** 3 * curve + c * (1 - curve)) * (rcRate / 1000);
+    return constrain(2000 * useRates * kissRc, -1998, 1998);
+  },
+  ACTUAL(c, a, rcRate, rate, expo) {
+    const e = expo / 100;
+    const expof = a * (c ** 5 * e + c * (1 - e));
+    const center = rcRate * 10;
+    const stick = Math.max(0, rate * 10 - center);
+    return c * center + stick * expof;
+  },
+  QUICK(c, a, rcRate, rate, expo, p) {
+    const rc = rcRate * 2;
+    const maxDPS = Math.max(rate * 10, rc);
+    const e = expo / 100;
+    const sf = (maxDPS / rc - 1) / (maxDPS / rc);
+    if (p.quickrates_rc_expo === "ON") {
+      const curve = c ** 3 * e + c * (1 - e);
+      return constrain(curve * rc / constrain(1 - a * sf, 0.01, 1), -1998, 1998);
+    }
+    const curve = a ** 3 * e + a * (1 - e);
+    return constrain(c * rc / constrain(1 - curve * sf, 0.01, 1), -1998, 1998);
+  },
+};
+
+// stick: -1..1 (full deflection). Returns deg/s including deadband and rate_limit.
+function setpoint(p, axis, stick, master) {
+  const db = (axis === "yaw" ? master.yaw_deadband : master.deadband) / 500;
+  const mag = Math.max(0, Math.abs(stick) - db) / (1 - db);
+  const c = Math.sign(stick) * mag;
+  const fn = RATE_FNS[p.rates_type] || RATE_FNS.BETAFLIGHT;
+  const v = fn(c, Math.abs(c), p[`${axis}_rc_rate`], p[`${axis}_srate`], p[`${axis}_expo`], p);
+  const lim = p[`${axis}_rate_limit`];
+  return constrain(v, -lim, lim);
+}
+
+// Column labels and display scaling per rates type, mirroring the configurator's RatesSubTab
+const DISPLAY = {
+  BETAFLIGHT: { name: "Betaflight", h: ["RC Rate", "Super Rate", "RC Expo"], f: [v => (v / 100).toFixed(2), v => (v / 100).toFixed(2), v => (v / 100).toFixed(2)] },
+  RACEFLIGHT: { name: "Raceflight", h: ["Rate", "Acro+", "Expo"], f: [v => v * 10, v => v, v => v] },
+  KISS:       { name: "KISS",       h: ["RC Rate", "Rate", "RC Curve"], f: [v => (v / 100).toFixed(2), v => (v / 100).toFixed(2), v => (v / 100).toFixed(2)] },
+  ACTUAL:     { name: "Actual",     h: ["Center Sensitivity", "Max Rate", "Expo"], f: [v => v * 10, v => v * 10, v => (v / 100).toFixed(2)] },
+  QUICK:      { name: "Quick",      h: ["RC Rate", "Max Rate", "Expo"], f: [v => (v / 100).toFixed(2), v => v * 10, v => (v / 100).toFixed(2)] },
+};
+
+let data = null;
+let selected = 0;
+let hoverStick = null;     // -1..1 on the rates graph
+let hoverThrottle = null;  // 0..1 on the throttle graph
+
+function render() {
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
+  if (!data) return;
+  data.rateProfiles.forEach((p, i) => {
+    const b = document.createElement("button");
+    b.className = i === selected ? "sel" : "";
+    b.textContent = `Rate Profile ${i + 1}${p.rateprofile_name ? ` – ${p.rateprofile_name}` : ""}`;
+    if (i === data.activeRateProfile) {
+      const s = document.createElement("span"); s.className = "act"; s.textContent = "active"; b.appendChild(s);
+    }
+    b.onclick = () => { selected = i; render(); };
+    tabs.appendChild(b);
+  });
+
+  const p = data.rateProfiles[selected];
+  const d = DISPLAY[p.rates_type] || DISPLAY.BETAFLIGHT;
+  document.getElementById("ratesTypeName").textContent = d.name;
+  document.getElementById("ratesLogo").textContent = d.name.toUpperCase();
+  ["h1", "h2", "h3"].forEach((id, i) => (document.getElementById(id).textContent = d.h[i]));
+
+  const rows = document.getElementById("rateRows");
+  rows.innerHTML = "";
+  for (const axis of AXES) {
+    const key = { roll: "A", pitch: "E", yaw: "R" }[axis];
+    const max = Math.round(setpoint(p, axis, 1, data.master));
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="lbl"><span class="axis ${axis}">${axis[0].toUpperCase() + axis.slice(1)} [${key}]</span></td>` +
+      `<td><span class="val">${d.f[0](p[`${axis}_rc_rate`])}</span></td>` +
+      `<td><span class="val">${d.f[1](p[`${axis}_srate`])}</span></td>` +
+      `<td><span class="val">${d.f[2](p[`${axis}_expo`])}</span></td>` +
+      `<td>${max}</td>`;
+    rows.appendChild(tr);
+  }
+  const limits = AXES.filter(a => p[`${a}_rate_limit`] !== 1998).map(a => `${a} ${p[`${a}_rate_limit`]}`);
+  const extras = [];
+  if (limits.length) extras.push(`Rate limit: ${limits.join(", ")} deg/s`);
+  if (p.rates_type === "QUICK") extras.push(`QuickRates RC expo: ${p.quickrates_rc_expo}`);
+  if (data.master.deadband || data.master.yaw_deadband) extras.push(`Deadband: ${data.master.deadband}, yaw ${data.master.yaw_deadband}`);
+  document.getElementById("limitHint").textContent = extras.join(" · ");
+
+  document.getElementById("thrLimitType").textContent = p.throttle_limit_type;
+  document.getElementById("thrLimitPct").textContent = p.throttle_limit_percent;
+  document.getElementById("thrMid").textContent = (p.thr_mid / 100).toFixed(2);
+  document.getElementById("thrExpo").textContent = (p.thr_expo / 100).toFixed(2);
+  document.getElementById("thrHover").textContent = (p.thr_hover / 100).toFixed(2);
+
+  drawRates(p);
+  drawThrottle(p);
+}
+
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function tag(ctx, text, x, y, color, align = "left") {
+  ctx.font = "14px system-ui, sans-serif";
+  const tw = ctx.measureText(text).width;
+  const bx = align === "right" ? x - tw - 16 : x;
+  ctx.fillStyle = color + "55";
+  ctx.fillRect(bx, y - 13, tw + 16, 24);
+  ctx.fillStyle = "#cfcfcf";
+  ctx.fillText(text, bx + 8, y + 4);
+}
+
+function drawRates(p) {
+  const { ctx, w, h } = setupCanvas(document.getElementById("rateCanvas"));
+  const maxes = AXES.map(a => Math.abs(setpoint(p, a, 1, data.master)));
+  const scaleMax = Math.max(200, Math.ceil(Math.max(...maxes) / 200) * 200);
+  const toY = v => h / 2 - (v / scaleMax) * (h / 2);
+  const toX = s => (s + 1) / 2 * w;
+
+  // axes
+  ctx.strokeStyle = "#888"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+  ctx.fillStyle = "#888"; ctx.font = "14px system-ui, sans-serif"; ctx.textAlign = "right";
+  ctx.fillText(`${scaleMax} deg/s`, w / 2 - 8, 18);
+  ctx.textAlign = "left";
+
+  // curves
+  ctx.lineWidth = 2;
+  for (const axis of AXES) {
+    ctx.strokeStyle = COLORS[axis];
+    ctx.beginPath();
+    for (let i = 0; i <= 400; i++) {
+      const s = -1 + (2 * i) / 400;
+      const y = toY(setpoint(p, axis, s, data.master));
+      i ? ctx.lineTo(toX(s), y) : ctx.moveTo(toX(s), y);
+    }
+    ctx.stroke();
+  }
+
+  // max velocity tags with leader lines to the top-right of each curve
+  AXES.forEach((axis, i) => {
+    const ty = 22 + i * 32;
+    const max = Math.round(setpoint(p, axis, 1, data.master));
+    ctx.strokeStyle = COLORS[axis] + "99"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(w - 70, ty); ctx.lineTo(w - 2, toY(max)); ctx.stroke();
+    tag(ctx, `${max} deg/s`, w - 70, ty, COLORS[axis], "right");
+  });
+
+  // stick position readout (centre unless hovering)
+  const stick = hoverStick ?? 0;
+  AXES.forEach((axis, i) => {
+    const v = Math.round(setpoint(p, axis, stick, data.master));
+    tag(ctx, `${v} deg/s`, 8, 70 + i * 40, COLORS[axis]);
+  });
+  ctx.fillStyle = "#8080ff";
+  for (const axis of AXES) {
+    ctx.beginPath(); ctx.arc(toX(stick), toY(setpoint(p, axis, stick, data.master)), 6, 0, 2 * Math.PI); ctx.fill();
+  }
+  if (hoverStick !== null) {
+    ctx.fillStyle = "#888"; ctx.textAlign = "right";
+    ctx.fillText(`stick ${Math.round(stick * 100)}%`, w - 10, h - 12);
+    ctx.textAlign = "left";
+  }
+}
+
+// Throttle curve: two quadratic beziers through (0,0) → (mid, hover) → (1, 1), as drawn by the configurator.
+// Sampled into points so SCALE / CLIP limits and the readout can be applied numerically.
+function throttleCurve(p) {
+  const mid = p.thr_mid / 100, hover = p.thr_hover / 100, expo = p.thr_expo / 100;
+  const ctrlL = { x: mid * 0.5, y: hover * 0.5 * (expo + 1) };
+  const ctrlR = { x: (1 + mid) * 0.5, y: 1 - (1 - hover) * 0.5 * (expo + 1) };
+  const q = (a, b, c, t) => (1 - t) ** 2 * a + 2 * (1 - t) * t * b + t * t * c;
+  const pts = [];
+  for (let i = 0; i <= 200; i++) {
+    const t = i / 200;
+    pts.push({ x: q(0, ctrlL.x, mid, t), y: q(0, ctrlL.y, hover, t) });
+  }
+  for (let i = 1; i <= 200; i++) {
+    const t = i / 200;
+    pts.push({ x: q(mid, ctrlR.x, 1, t), y: q(hover, ctrlR.y, 1, t) });
+  }
+  const limit = p.throttle_limit_percent / 100;
+  for (const pt of pts) {
+    if (p.throttle_limit_type === "SCALE") pt.y *= limit;
+    else if (p.throttle_limit_type === "CLIP") pt.y = Math.min(pt.y, limit);
+  }
+  return pts;
+}
+
+function throttleAt(pts, x) {
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    if (x <= b.x) return b.x === a.x ? b.y : a.y + ((x - a.x) / (b.x - a.x)) * (b.y - a.y);
+  }
+  return pts[pts.length - 1].y;
+}
+
+function drawThrottle(p) {
+  const { ctx, w, h } = setupCanvas(document.getElementById("thrCanvas"));
+  const pts = throttleCurve(p);
+  ctx.strokeStyle = "#ffbb00"; ctx.lineWidth = 2;
+  ctx.beginPath();
+  pts.forEach((pt, i) => (i ? ctx.lineTo(pt.x * w, h - pt.y * h) : ctx.moveTo(pt.x * w, h - pt.y * h)));
+  ctx.stroke();
+
+  const x = hoverThrottle ?? 0.5;
+  const y = throttleAt(pts, x);
+  ctx.fillStyle = "#ffbb00";
+  ctx.beginPath(); ctx.arc(x * w, h - y * h, 5, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = "#888"; ctx.font = "16px system-ui, sans-serif";
+  ctx.fillText(`${Math.round(x * 100)}% = ${Math.round(y * 100)}%`, 10, 24);
+}
+
+function trackHover(id, setter) {
+  const c = document.getElementById(id);
+  c.addEventListener("mousemove", e => {
+    const r = c.getBoundingClientRect();
+    setter(constrain((e.clientX - r.left) / r.width, 0, 1));
+    if (data) render();
+  });
+  c.addEventListener("mouseleave", () => { setter(null); if (data) render(); });
+}
+trackHover("rateCanvas", v => (hoverStick = v === null ? null : v * 2 - 1));
+trackHover("thrCanvas", v => (hoverThrottle = v));
+
+function load(file) {
+  file.text().then(text => {
+    const meta = document.getElementById("meta");
+    if (!/^\s*(set|rateprofile|board_name)\b/m.test(text)) {
+      meta.innerHTML = `<span class="err">${file.name} doesn't look like a Betaflight CLI backup.</span>`;
+      return;
+    }
+    data = parseBackup(text);
+    selected = data.activeRateProfile;
+    meta.textContent = [file.name, data.craft, data.board, data.version].filter(Boolean).join(" · ");
+    document.getElementById("empty").hidden = true;
+    document.getElementById("view").hidden = false;
+    render();
+  });
+}
+
+const drop = document.getElementById("drop");
+document.getElementById("file").addEventListener("change", e => e.target.files[0] && load(e.target.files[0]));
+["dragover", "dragenter"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+document.addEventListener("drop", e => e.dataTransfer.files[0] && load(e.dataTransfer.files[0]));
+window.addEventListener("resize", () => data && render());
+</script>
+</body>
+</html>
