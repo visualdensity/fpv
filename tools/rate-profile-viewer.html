@@ -61,7 +61,18 @@
   td.lbl { text-align: left; width: 1%; white-space: nowrap; }
   .axis { display: inline-block; color: #fff; font-weight: 700; border-radius: 4px; padding: 3px 10px; }
   .axis.roll { background: var(--roll); } .axis.pitch { background: var(--pitch); } .axis.yaw { background: var(--yaw); }
-  .val { display: inline-block; min-width: 64px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; text-align: left; }
+  .val {
+    width: 84px; background: transparent; color: var(--text); font: inherit;
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; text-align: left;
+  }
+  .val:focus { outline: none; border-color: var(--accent); }
+  select.val { width: 140px; }
+  select.val option { background: var(--panel); }
+  #reset {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit;
+  }
+  #reset:hover { border-color: var(--accent); color: var(--accent); }
   .sub { color: var(--muted); font-size: 13px; }
   .fields { display: flex; gap: 20px; flex-wrap: wrap; }
   .fields .f { display: flex; flex-direction: column; gap: 4px; }
@@ -78,6 +89,7 @@
 <header>
   <h1>Betaflight Rate Profile Viewer</h1>
   <label id="drop">Choose or drop a Betaflight backup (.txt) <input type="file" id="file" accept=".txt,text/plain"></label>
+  <button id="reset" hidden title="Discard edits and restore the values from the loaded file">Reset to file values</button>
   <span id="meta"></span>
 </header>
 
@@ -87,7 +99,7 @@
 <div id="view" class="grid" hidden>
   <div class="col">
     <div class="box ratestype">
-      <span class="pill" id="ratesTypeName"></span><span>Rates Type</span><span class="logo" id="ratesLogo"></span>
+      <select class="val" id="ratesType"></select><span>Rates Type</span><span class="logo" id="ratesLogo"></span>
     </div>
     <div class="box">
       <table>
@@ -104,13 +116,13 @@
   </div>
   <div class="col">
     <div class="box fields">
-      <div class="f"><span>Throttle Limit</span><span class="val" id="thrLimitType"></span></div>
-      <div class="f"><span>Throttle Limit %</span><span class="val" id="thrLimitPct"></span></div>
+      <div class="f"><span>Throttle Limit</span><select class="val" id="thrLimitType"></select></div>
+      <div class="f"><span>Throttle Limit %</span><input class="val" type="number" id="thrLimitPct"></div>
     </div>
     <div class="box fields">
-      <div class="f"><span>Throttle MID</span><span class="val" id="thrMid"></span></div>
-      <div class="f"><span>Throttle EXPO</span><span class="val" id="thrExpo"></span></div>
-      <div class="f"><span>Throttle Hover</span><span class="val" id="thrHover"></span></div>
+      <div class="f"><span>Throttle MID</span><input class="val" type="number" id="thrMid"></div>
+      <div class="f"><span>Throttle EXPO</span><input class="val" type="number" id="thrExpo"></div>
+      <div class="f" id="thrHoverField"><span>Throttle Hover</span><input class="val" type="number" id="thrHover"></div>
     </div>
     <div class="box titled">
       <span class="title">Throttle Curve Preview</span>
@@ -146,6 +158,8 @@ function defaultRateProfile() {
 function parseBackup(text) {
   const result = {
     version: "", board: "", craft: "",
+    apiVersion: null,  // [major, minor] from the "MSP API: x.y" header
+    hasThrottleHover: false,
     master: { deadband: 0, yaw_deadband: 0 },
     rateProfiles: [0, 1, 2, 3].map(defaultRateProfile),
     activeRateProfile: 0,
@@ -158,6 +172,8 @@ function parseBackup(text) {
     if (line.startsWith("#")) {
       const m = line.match(/^#\s*(Betaflight\s*\/.*)$/);
       if (m && !result.version) result.version = m[1];
+      const api = line.match(/MSP API:\s*(\d+)\.(\d+)/);
+      if (api && !result.apiVersion) result.apiVersion = [+api[1], +api[2]];
       continue;
     }
     let m;
@@ -174,7 +190,14 @@ function parseBackup(text) {
       if (key === "craft_name") result.craft = value;
       const target = section === "rate" ? result.rateProfiles[current] : section === "master" ? result.master : null;
       if (target) target[key] = /^-?\d+$/.test(value) ? +value : value;
+      if (key === "thr_hover") result.hasThrottleHover = true;
     }
+  }
+  // The configurator only uses thr_hover from MSP API 1.47 (RatesSubTab hasThrottleHover).
+  // Without a version header, fall back to whether the backup mentions thr_hover at all.
+  if (result.apiVersion) {
+    const [major, minor] = result.apiVersion;
+    result.hasThrottleHover = major > 1 || (major === 1 && minor >= 47);
   }
   return result;
 }
@@ -232,21 +255,63 @@ function setpoint(p, axis, stick, master) {
   return constrain(v, -lim, lim);
 }
 
+// Converts between the raw CLI integer and the value shown in the UI (raw * k, shown with dp decimals)
+const scale = (k, dp, step) => ({
+  toUi: v => (v * k).toFixed(dp),
+  fromUi: v => v / k,
+  step,
+});
+const X100 = scale(0.01, 2, 0.01);
+
 // Column labels and display scaling per rates type, mirroring the configurator's RatesSubTab
 const DISPLAY = {
-  BETAFLIGHT: { name: "Betaflight", h: ["RC Rate", "Super Rate", "RC Expo"], f: [v => (v / 100).toFixed(2), v => (v / 100).toFixed(2), v => (v / 100).toFixed(2)] },
-  RACEFLIGHT: { name: "Raceflight", h: ["Rate", "Acro+", "Expo"], f: [v => v * 10, v => v, v => v] },
-  KISS:       { name: "KISS",       h: ["RC Rate", "Rate", "RC Curve"], f: [v => (v / 100).toFixed(2), v => (v / 100).toFixed(2), v => (v / 100).toFixed(2)] },
-  ACTUAL:     { name: "Actual",     h: ["Center Sensitivity", "Max Rate", "Expo"], f: [v => v * 10, v => v * 10, v => (v / 100).toFixed(2)] },
-  QUICK:      { name: "Quick",      h: ["RC Rate", "Max Rate", "Expo"], f: [v => (v / 100).toFixed(2), v => v * 10, v => (v / 100).toFixed(2)] },
+  BETAFLIGHT: { name: "Betaflight", h: ["RC Rate", "Super Rate", "RC Expo"], f: [X100, X100, X100] },
+  RACEFLIGHT: { name: "Raceflight", h: ["Rate", "Acro+", "Expo"], f: [scale(10, 0, 10), scale(1, 0, 1), scale(1, 0, 1)] },
+  KISS:       { name: "KISS",       h: ["RC Rate", "Rate", "RC Curve"], f: [X100, X100, X100] },
+  ACTUAL:     { name: "Actual",     h: ["Center Sensitivity", "Max Rate", "Expo"], f: [scale(10, 0, 10), scale(10, 0, 10), X100] },
+  QUICK:      { name: "Quick",      h: ["RC Rate", "Max Rate", "Expo"], f: [X100, scale(10, 0, 10), X100] },
 };
+// Raw setting suffixes for the three columns, with firmware min/max (betaflight/src/main/fc/rc_controls.h)
+const COLUMNS = [["rc_rate", 1, 255], ["srate", 0, 255], ["expo", 0, 100]];
 
 let data = null;
+let original = null;       // rate profiles as loaded, for "Reset to file values"
 let selected = 0;
 let hoverStick = null;     // -1..1 on the rates graph
 let hoverThrottle = null;  // 0..1 on the throttle graph
 
+// Wire an input to a raw setting. Edits redraw immediately; leaving the field shows the value the FC would store.
+function bindInput(input, key, conv, min, max) {
+  const p = data.rateProfiles[selected];
+  input.type = "number";
+  input.step = conv.step;
+  input.min = conv.toUi(min);
+  input.max = conv.toUi(max);
+  input.value = conv.toUi(p[key]);
+  input.oninput = () => {
+    const v = parseFloat(input.value);
+    if (Number.isNaN(v)) return;
+    p[key] = constrain(Math.round(conv.fromUi(v)), min, max);
+    renderGraphs();
+  };
+  input.onchange = () => { input.value = conv.toUi(p[key]); };
+}
+
+function bindSelect(select, key, options, onChange) {
+  const p = data.rateProfiles[selected];
+  select.innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  select.value = p[key];
+  select.onchange = () => { p[key] = select.value; onChange(); };
+}
+
 function render() {
+  renderTabs();
+  if (!data) return;
+  renderFields();
+  renderGraphs();
+}
+
+function renderTabs() {
   const tabs = document.getElementById("tabs");
   tabs.innerHTML = "";
   if (!data) return;
@@ -260,10 +325,13 @@ function render() {
     b.onclick = () => { selected = i; render(); };
     tabs.appendChild(b);
   });
+}
 
+function renderFields() {
   const p = data.rateProfiles[selected];
   const d = DISPLAY[p.rates_type] || DISPLAY.BETAFLIGHT;
-  document.getElementById("ratesTypeName").textContent = d.name;
+  bindSelect(document.getElementById("ratesType"), "rates_type",
+    RATES_TYPES.map(t => [t, DISPLAY[t].name]), () => { renderFields(); renderGraphs(); });
   document.getElementById("ratesLogo").textContent = d.name.toUpperCase();
   ["h1", "h2", "h3"].forEach((id, i) => (document.getElementById(id).textContent = d.h[i]));
 
@@ -271,28 +339,44 @@ function render() {
   rows.innerHTML = "";
   for (const axis of AXES) {
     const key = { roll: "A", pitch: "E", yaw: "R" }[axis];
-    const max = Math.round(setpoint(p, axis, 1, data.master));
     const tr = document.createElement("tr");
-    tr.innerHTML =
-      `<td class="lbl"><span class="axis ${axis}">${axis[0].toUpperCase() + axis.slice(1)} [${key}]</span></td>` +
-      `<td><span class="val">${d.f[0](p[`${axis}_rc_rate`])}</span></td>` +
-      `<td><span class="val">${d.f[1](p[`${axis}_srate`])}</span></td>` +
-      `<td><span class="val">${d.f[2](p[`${axis}_expo`])}</span></td>` +
-      `<td>${max}</td>`;
+    tr.innerHTML = `<td class="lbl"><span class="axis ${axis}">${axis[0].toUpperCase() + axis.slice(1)} [${key}]</span></td>`;
+    COLUMNS.forEach(([suffix, min, max], i) => {
+      const td = document.createElement("td");
+      const input = document.createElement("input");
+      input.className = "val";
+      bindInput(input, `${axis}_${suffix}`, d.f[i], min, max);
+      td.appendChild(input);
+      tr.appendChild(td);
+    });
+    const maxTd = document.createElement("td");
+    maxTd.id = `max-${axis}`;
+    tr.appendChild(maxTd);
     rows.appendChild(tr);
+  }
+
+  bindSelect(document.getElementById("thrLimitType"), "throttle_limit_type",
+    THROTTLE_LIMIT_TYPES.map(t => [t, t]), renderGraphs);
+  bindInput(document.getElementById("thrLimitPct"), "throttle_limit_percent", scale(1, 0, 1), 25, 100);
+  bindInput(document.getElementById("thrMid"), "thr_mid", X100, 0, 100);
+  bindInput(document.getElementById("thrExpo"), "thr_expo", X100, 0, 100);
+  bindInput(document.getElementById("thrHover"), "thr_hover", X100, 0, 100);
+  document.getElementById("thrHoverField").hidden = !data.hasThrottleHover;
+}
+
+// Everything derived from the current values: max velocities, notes and both graphs
+function renderGraphs() {
+  const p = data.rateProfiles[selected];
+  for (const axis of AXES) {
+    document.getElementById(`max-${axis}`).textContent = Math.round(setpoint(p, axis, 1, data.master));
   }
   const limits = AXES.filter(a => p[`${a}_rate_limit`] !== 1998).map(a => `${a} ${p[`${a}_rate_limit`]}`);
   const extras = [];
   if (limits.length) extras.push(`Rate limit: ${limits.join(", ")} deg/s`);
   if (p.rates_type === "QUICK") extras.push(`QuickRates RC expo: ${p.quickrates_rc_expo}`);
   if (data.master.deadband || data.master.yaw_deadband) extras.push(`Deadband: ${data.master.deadband}, yaw ${data.master.yaw_deadband}`);
+  if (data.hasThrottleHover && p.thr_hover === 0) extras.push("Throttle hover is 0: the throttle curve stays at 0% up to Throttle MID");
   document.getElementById("limitHint").textContent = extras.join(" · ");
-
-  document.getElementById("thrLimitType").textContent = p.throttle_limit_type;
-  document.getElementById("thrLimitPct").textContent = p.throttle_limit_percent;
-  document.getElementById("thrMid").textContent = (p.thr_mid / 100).toFixed(2);
-  document.getElementById("thrExpo").textContent = (p.thr_expo / 100).toFixed(2);
-  document.getElementById("thrHover").textContent = (p.thr_hover / 100).toFixed(2);
 
   drawRates(p);
   drawThrottle(p);
@@ -371,10 +455,13 @@ function drawRates(p) {
   }
 }
 
-// Throttle curve: two quadratic beziers through (0,0) → (mid, hover) → (1, 1), as drawn by the configurator.
+// Throttle curve: two quadratic beziers through (0,0) → (mid, hover) → (1, 1), as drawn by the configurator
+// (RatesSubTab computeCurveParams) and built by the firmware (rc.c initRcProcessing).
+// Before MSP API 1.47 there is no hover setting and the hover point is (mid, mid).
 // Sampled into points so SCALE / CLIP limits and the readout can be applied numerically.
 function throttleCurve(p) {
-  const mid = p.thr_mid / 100, hover = p.thr_hover / 100, expo = p.thr_expo / 100;
+  const mid = p.thr_mid / 100, expo = p.thr_expo / 100;
+  const hover = data.hasThrottleHover ? p.thr_hover / 100 : mid;
   const ctrlL = { x: mid * 0.5, y: hover * 0.5 * (expo + 1) };
   const ctrlR = { x: (1 + mid) * 0.5, y: 1 - (1 - hover) * 0.5 * (expo + 1) };
   const q = (a, b, c, t) => (1 - t) ** 2 * a + 2 * (1 - t) * t * b + t * t * c;
@@ -424,9 +511,9 @@ function trackHover(id, setter) {
   c.addEventListener("mousemove", e => {
     const r = c.getBoundingClientRect();
     setter(constrain((e.clientX - r.left) / r.width, 0, 1));
-    if (data) render();
+    if (data) renderGraphs();
   });
-  c.addEventListener("mouseleave", () => { setter(null); if (data) render(); });
+  c.addEventListener("mouseleave", () => { setter(null); if (data) renderGraphs(); });
 }
 trackHover("rateCanvas", v => (hoverStick = v === null ? null : v * 2 - 1));
 trackHover("thrCanvas", v => (hoverThrottle = v));
@@ -439,7 +526,9 @@ function load(file) {
       return;
     }
     data = parseBackup(text);
+    original = structuredClone(data.rateProfiles);
     selected = data.activeRateProfile;
+    document.getElementById("reset").hidden = false;
     meta.textContent = [file.name, data.craft, data.board, data.version].filter(Boolean).join(" · ");
     document.getElementById("empty").hidden = true;
     document.getElementById("view").hidden = false;
@@ -452,7 +541,11 @@ document.getElementById("file").addEventListener("change", e => e.target.files[0
 ["dragover", "dragenter"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
 document.addEventListener("drop", e => e.dataTransfer.files[0] && load(e.dataTransfer.files[0]));
-window.addEventListener("resize", () => data && render());
+window.addEventListener("resize", () => data && renderGraphs());
+document.getElementById("reset").addEventListener("click", () => {
+  data.rateProfiles = structuredClone(original);
+  render();
+});
 </script>
 </body>
 </html>
