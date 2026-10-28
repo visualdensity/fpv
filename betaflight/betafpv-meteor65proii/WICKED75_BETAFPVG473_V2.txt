@@ -153,9 +153,9 @@ rateprofile 0
 set thr_mid = 0
 set thr_expo = 70
 set thr_hover = 0
-set roll_expo = 10
-set pitch_expo = 10
-set yaw_expo = 10
+set roll_expo = 50
+set pitch_expo = 50
+set yaw_expo = 50
 set roll_srate = 53
 set pitch_srate = 53
 set yaw_srate = 53
