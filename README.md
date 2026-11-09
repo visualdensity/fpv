@@ -34,10 +34,11 @@ You must ensure you setup these basics up correctly!
 
 ## Bind Drone with Controller
 
- 1. Bind using the SYS -> ExpressLRS -> BIND
- 2. If you get stuck in "Loading..." after choosing ExpressLRS, set Internal RF to CRSF in the
+ 1. Put the drone into bind mode - usually connect/disconnect the battery 3 times quickly.
+ 2. Bind using the SYS -> ExpressLRS -> BIND
+ 3. If you get stuck in "Loading..." after choosing ExpressLRS, set Internal RF to CRSF in the
     **Setup** page and try again.
- 3. Once bound, you can test by restarting the drone. It should say "Telemetry lost" and then
+ 4. Once bound, you can test by restarting the drone. It should say "Telemetry lost" and then
     "Telemetry restored" when you power on the controller.
 
 ## Bind FPV with Goggle
