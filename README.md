@@ -54,6 +54,7 @@ You must ensure you setup these basics up correctly!
 ## Bind VTX Power with RadioMaster Pocket SF Dial
 
 Using Betaflight CLI, you can set specific VTX power level to SF pot dial on the RadioMaster Pocket.
+Credit where it's due, this is ripped out of [Alec Searle's video](https://www.youtube.com/watch?v=oTeYJ_vXaNI)
 
 ### RadioMaster Pocket Setup
 
@@ -76,6 +77,7 @@ You should also set your OSD to display VTX power:
 
 
 ### Betaflight CLI Setup
+
 
 You can check your VTX table in Betaflight CLI:
 ```
